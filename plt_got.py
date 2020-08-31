@@ -23,14 +23,14 @@ def section_info(r, section_name):
 
     return res[0]
 
-def is_inside_got(got, addr):
-    got_addr = got["vaddr"]
-    got_size = got["size"]
+def is_inside_section(section, addr):
+    section_addr = section["vaddr"]
+    section_size = section["size"]
 
-    return addr >= got_addr and addr < got_addr + got_size
+    return addr >= section_addr and addr < section_addr + section_size
 
 def select_got_relocs(relocs, got):
-    return [reloc for reloc in relocs if is_inside_got(got, reloc["vaddr"])]
+    return [reloc for reloc in relocs if is_inside_section(got, reloc["vaddr"])]
 
 # We need a real function to get unique addr
 def get_unique_addr():
@@ -54,7 +54,7 @@ def patch_got_for_analysis(r, got_relocs):
 def get_pc_esil(r):
     return r.cmdj('aerj')[pc_name]
 
-def resolve_plt_entrie(r, info):
+def resolve_plt_entrie(r, plt, info):
     start_addr = info['offset']
     start_esil_at_addr(r, start_addr)
 
@@ -67,7 +67,7 @@ def resolve_plt_entrie(r, info):
         tmp = get_pc_esil(r)
 
         # detect jump out of the plt
-        if tmp != next_pc_value:
+        if not is_inside_section(plt, tmp):
             break
         pc = tmp
 
@@ -96,7 +96,8 @@ def plt_analysis(r, value_to_got):
 
         info = info[0]
 
-        jmp_pc = resolve_plt_entrie(r, info)
+        jmp_pc = resolve_plt_entrie(r, plt, info)
+
         if jmp_pc in value_to_got:
             res[pc] = value_to_got[jmp_pc]
 
