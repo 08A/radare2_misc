@@ -6,7 +6,7 @@ unique_addr = 8
 pc_name = ""
 
 
-def find_pc_register(r):
+def find_pc_register_name(r):
     global pc_name
     pc_name = [reg for reg in r.cmdj('arrj') if "role" in reg and reg["role"] == "PC"][0]["reg"]
 
@@ -34,6 +34,40 @@ def is_inside_section(section, addr):
     return section_addr <= addr < section_addr + section_size
 
 
+def is_inside_section_without_start(section, addr):
+    section_addr = section["vaddr"]
+    section_size = section["size"]
+
+    return section_addr < addr < section_addr + section_size
+
+
+def get_pc_esil(r):
+    return r.cmdj('aerj')[pc_name]
+
+
+def resolve_plt_entrie(r, plt, start_addr):
+    start_esil_at_addr(r, start_addr)
+
+    while True:
+        r.cmd('aes')
+        tmp = get_pc_esil(r)
+
+        # detect jump out of the plt
+        if not is_inside_section_without_start(plt, tmp):
+            break
+
+    return get_pc_esil(r)
+
+
+# source https://github.com/haystack-ia/radare-funhouse/blob/master/plt_fixup.py
+def get_plt_stubs(r, plt):
+    r.cmd('aaf')
+    clear_screen()
+    all_functions = r.cmdj('aflj')
+
+    return [func for func in all_functions if is_inside_section_without_start(plt, func['offset'])]
+
+
 def select_got_relocs(relocs, got):
     return [reloc for reloc in relocs if is_inside_section(got, reloc["vaddr"])]
 
@@ -59,36 +93,19 @@ def patch_got_for_analysis(r, got_relocs):
     return res
 
 
-def get_pc_esil(r):
-    return r.cmdj('aerj')[pc_name]
+def get_patched_got_relocs(r):
+    # doesn't work if the .got section doesn't exist, we need to fix how we get the got addr
+    got = section_info(r, '.got')
+
+    all_relocs = r.cmdj('irj')
+    got_relocs = select_got_relocs(all_relocs, got)
+    return patch_got_for_analysis(r, got_relocs)
 
 
-def resolve_plt_entrie(r, plt, start_addr):
-    start_esil_at_addr(r, start_addr)
+def plt_analyis(r):
+    # get a hash table that associate an unique id to a got addr
+    id_to_got_addr = get_patched_got_relocs(r)
 
-    while True:
-        r.cmd('aes')
-        tmp = get_pc_esil(r)
-
-        # detect jump out of the plt
-        if not is_inside_section(plt, tmp):
-            break
-
-    return get_pc_esil(r)
-
-
-# source https://github.com/haystack-ia/radare-funhouse/blob/master/plt_fixup.py
-def get_plt_stubs(r, plt):
-    r.cmd('aaf')
-    all_functions = r.cmdj('aflj')
-
-    plt_start = plt['vaddr']
-    plt_end = plt_start + plt['vsize']
-
-    return [func for func in all_functions if plt_start < func['offset'] < plt_end]
-
-
-def plt_analysis(r, value_to_got):
     plt = section_info(r, '.plt')
     plt_stubs = get_plt_stubs(r, plt)
 
@@ -99,20 +116,30 @@ def plt_analysis(r, value_to_got):
         stub_addr = stub['offset']
 
         stub_jump_addr = resolve_plt_entrie(r, plt, stub_addr)
-        if stub_jump_addr in value_to_got:
-            res[stub_addr] = value_to_got[stub_jump_addr]
+        if stub_jump_addr in id_to_got_addr:
+            res[stub_addr] = id_to_got_addr[stub_jump_addr]
+        else:
+            print(f"WARNING: {hex(stub_addr)}")
 
     return res
 
 
-def fix_got_plt(r):
-    relocs = r.cmdj('irj')
-    # doesn't work if the .got section doesn't exist, we need to fix how we get the got addr
-    got = section_info(r, '.got')
-    got_relocs = select_got_relocs(relocs, got)
+def parse_args():
+    if len(sys.argv) < 2:
+        print("Not enough arguments")
+        sys.exit(1)
 
-    value_to_got = patch_got_for_analysis(r, got_relocs)
-    return plt_analysis(r, value_to_got)
+    filename = sys.argv[1]
+    return r2pipe.open(filename)
+
+
+def init(r):
+    r.cmd('e io.pcache=true')
+    find_pc_register_name(r)
+
+
+def clear_screen():
+    os.system('clear')
 
 
 def print_res(res):
@@ -120,25 +147,17 @@ def print_res(res):
         print(f"{hex(key)} -> {hex(res[key])}")
 
 
-def clear_screen():
-    os.system('clear')
+def dump_result(result):
+    clear_screen()
+    print_res(result)
 
 
 def main():
-    if len(sys.argv) < 2:
-        print("Not enough arguments")
-        sys.exit(1)
+    r = parse_args()
+    init(r)
 
-    filename = sys.argv[1]
-    r = r2pipe.open(filename)
-
-    # find the pc register
-    find_pc_register(r)
-
-    r.cmd('e io.pcache=true')
-    res = fix_got_plt(r)
-    clear_screen()
-    print_res(res)
+    res = plt_analyis(r)
+    dump_result(res)
 
 
 if __name__ == "__main__":
