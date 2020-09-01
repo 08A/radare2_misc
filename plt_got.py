@@ -1,3 +1,4 @@
+import os
 import sys
 import r2pipe
 
@@ -62,8 +63,7 @@ def get_pc_esil(r):
     return r.cmdj('aerj')[pc_name]
 
 
-def resolve_plt_entrie(r, plt, info):
-    start_addr = info['offset']
+def resolve_plt_entrie(r, plt, start_addr):
     start_esil_at_addr(r, start_addr)
 
     while True:
@@ -77,36 +77,30 @@ def resolve_plt_entrie(r, plt, info):
     return get_pc_esil(r)
 
 
-def plt_analysis(r, value_to_got):
-    r.cmd('s section..plt')
+# source https://github.com/haystack-ia/radare-funhouse/blob/master/plt_fixup.py
+def get_plt_stubs(r, plt):
+    r.cmd('aaf')
+    all_functions = r.cmdj('aflj')
 
-    plt = section_info(r, '.plt')
     plt_start = plt['vaddr']
     plt_end = plt_start + plt['vsize']
 
-    pc = plt_start
+    return [func for func in all_functions if plt_start < func['offset'] < plt_end]
+
+
+def plt_analysis(r, value_to_got):
+    plt = section_info(r, '.plt')
+    plt_stubs = get_plt_stubs(r, plt)
 
     # plt_addr -> got_addr
     res = {}
 
-    while pc < plt_end:
-        r.cmd("af")
-        info = r.cmdj("afij")
+    for stub in plt_stubs:
+        stub_addr = stub['offset']
 
-        if len(info) < 1:
-            pc += r.cmdj('pdj1')[0]['size']
-            r.cmd(f"s {pc}")
-            continue
-
-        info = info[0]
-
-        jmp_pc = resolve_plt_entrie(r, plt, info)
-
-        if jmp_pc in value_to_got:
-            res[pc] = value_to_got[jmp_pc]
-
-        pc += info["realsz"]
-        r.cmd(f"s {pc}")
+        stub_jump_addr = resolve_plt_entrie(r, plt, stub_addr)
+        if stub_jump_addr in value_to_got:
+            res[stub_addr] = value_to_got[stub_jump_addr]
 
     return res
 
@@ -126,6 +120,10 @@ def print_res(res):
         print(f"{hex(key)} -> {hex(res[key])}")
 
 
+def clear_screen():
+    os.system('clear')
+
+
 def main():
     if len(sys.argv) < 2:
         print("Not enough arguments")
@@ -139,6 +137,7 @@ def main():
 
     r.cmd('e io.pcache=true')
     res = fix_got_plt(r)
+    clear_screen()
     print_res(res)
 
 
